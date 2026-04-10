@@ -22,7 +22,7 @@ from losses.iou_loss import IoULoss
 def parse_args():
     parser = argparse.ArgumentParser(description="DA6401 Assignment 2 Training")
     parser.add_argument("--task",        type=str,   default="classify",
-                        choices=["classify", "localize"],
+                        choices=["classify", "localize", "segment"],
                         help="Which task to train")
     parser.add_argument("--data_root",   type=str,   default="data/oxford_pets")
     parser.add_argument("--epochs",      type=int,   default=20)
@@ -63,7 +63,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, task):
             if has_bbox.any():
                 p = pred_boxes[has_bbox]
                 t = bboxes[has_bbox]
-                mse_loss = criterion["mse"](p, t)
+                mse_loss = criterion["mse"](p / 224.0, t / 224.0)
                 iou_loss = criterion["iou"](p, t)
                 loss     = mse_loss + iou_loss
             else:
@@ -109,7 +109,7 @@ def evaluate(model, loader, criterion, device, task):
             if has_bbox.any():
                 p = pred_boxes[has_bbox]
                 t = bboxes[has_bbox]
-                mse_loss = criterion["mse"](p, t)
+                mse_loss = criterion["mse"](p / 224.0, t / 224.0)
                 iou_loss = criterion["iou"](p, t)
                 loss     = mse_loss + iou_loss
                 # Track IoU score (1 - loss) for logging
@@ -296,6 +296,164 @@ def train_localizer(args, device):
     print(f"\nBest val IoU: {best_iou:.4f} — checkpoint at {save_path}")
     return model
 
+def dice_loss(pred: torch.Tensor, target: torch.Tensor,
+              num_classes: int = 3, eps: float = 1e-6) -> torch.Tensor:
+    """Soft Dice loss averaged over classes.
+
+    Args:
+        pred:   [B, C, H, W] logits
+        target: [B, H, W] class indices
+    """
+    probs  = torch.softmax(pred, dim=1)          # [B, C, H, W]
+    target_oh = nn.functional.one_hot(
+        target, num_classes
+    ).permute(0, 3, 1, 2).float()                # [B, C, H, W]
+
+    dims   = (0, 2, 3)   # sum over batch, H, W
+    inter  = (probs * target_oh).sum(dims)
+    union  = probs.sum(dims) + target_oh.sum(dims)
+    dice   = (2 * inter + eps) / (union + eps)
+    return 1.0 - dice.mean()
+
+
+def train_segmentation(args, device):
+    """Train Task 3: U-Net segmentation."""
+    from models.segmentation import VGG11UNet
+
+    train_ds = OxfordIIITPetDataset(args.data_root, split="train")
+    val_ds   = OxfordIIITPetDataset(args.data_root, split="val")
+
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=True
+    )
+
+    model = VGG11UNet(num_classes=3).to(device)
+
+    # Load encoder weights from classifier if available
+    classifier_path = os.path.join(args.checkpoint_dir, "classifier.pth")
+    if os.path.exists(classifier_path):
+        ckpt = torch.load(classifier_path, map_location=device)
+        sd   = ckpt.get("state_dict", ckpt)
+        encoder_sd = {
+            k.replace("encoder.", ""): v
+            for k, v in sd.items() if k.startswith("encoder.")
+        }
+        missing = model.encoder.load_state_dict(encoder_sd, strict=False)
+        print(f"Loaded encoder from classifier.pth — {missing}")
+
+        if args.freeze_encoder:
+            for p in model.encoder.parameters():
+                p.requires_grad = False
+            print("Encoder frozen.")
+        else:
+            print("Encoder will be fine-tuned.")
+
+    ce_loss  = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.lr
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=7, gamma=0.1
+    )
+
+    best_dice = 0.0
+    save_path = os.path.join(args.checkpoint_dir, "unet.pth")
+
+    print(f"\nTraining U-Net for {args.epochs} epochs...")
+
+    for epoch in range(1, args.epochs + 1):
+        # ── Train ──────────────────────────────────────────────────────
+        model.train()
+        train_loss = 0.0
+        for batch in tqdm(train_loader, desc="Train", leave=False):
+            images = batch["image"].to(device)
+            masks  = batch["mask"].to(device)       # [B, 224, 224] longs
+
+            optimizer.zero_grad()
+            logits = model(images)                  # [B, 3, 224, 224]
+            loss   = ce_loss(logits, masks) + dice_loss(logits, masks)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            optimizer.step()
+            train_loss += loss.item()
+
+        # ── Validate ───────────────────────────────────────────────────
+        model.eval()
+        val_loss   = 0.0
+        dice_scores = []
+        pixel_correct = 0
+        pixel_total   = 0
+
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc="Val  ", leave=False):
+                images = batch["image"].to(device)
+                masks  = batch["mask"].to(device)
+
+                logits = model(images)
+                loss   = ce_loss(logits, masks) + dice_loss(logits, masks)
+                val_loss += loss.item()
+
+                preds = logits.argmax(dim=1)         # [B, 224, 224]
+
+                # Pixel accuracy
+                pixel_correct += (preds == masks).sum().item()
+                pixel_total   += masks.numel()
+
+                # Dice per batch
+                for c in range(3):
+                    p = (preds == c).float()
+                    t = (masks  == c).float()
+                    inter = (p * t).sum()
+                    union = p.sum() + t.sum()
+                    if union > 0:
+                        dice_scores.append(
+                            (2 * inter / (union + 1e-6)).item()
+                        )
+
+        avg_train = train_loss / len(train_loader)
+        avg_val   = val_loss   / len(val_loader)
+        mean_dice = float(sum(dice_scores) / len(dice_scores)) if dice_scores else 0.0
+        pix_acc   = pixel_correct / pixel_total
+
+        scheduler.step()
+        lr = optimizer.param_groups[0]["lr"]
+
+        print(
+            f"Epoch {epoch:02d}/{args.epochs} | "
+            f"Train loss: {avg_train:.4f} | "
+            f"Val loss: {avg_val:.4f}  "
+            f"Dice: {mean_dice:.4f}  "
+            f"PixAcc: {pix_acc:.4f} | "
+            f"LR: {lr:.6f}"
+        )
+
+        wandb.log({
+            "epoch":          epoch,
+            "train/loss":     avg_train,
+            "val/loss":       avg_val,
+            "val/dice":       mean_dice,
+            "val/pixel_acc":  pix_acc,
+            "lr":             lr,
+        })
+
+        if mean_dice > best_dice:
+            best_dice = mean_dice
+            torch.save({
+                "state_dict":  model.state_dict(),
+                "epoch":       epoch,
+                "best_metric": best_dice,
+                "arch":        "VGG11UNet",
+            }, save_path)
+            print(f"  → Saved best U-Net (Dice={best_dice:.4f})")
+
+    print(f"\nBest val Dice: {best_dice:.4f} — checkpoint at {save_path}")
+    return model
 
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
@@ -316,6 +474,8 @@ def main():
         train_classifier(args, device)
     elif args.task == "localize":
         train_localizer(args, device)
+    elif args.task == "segment":
+        train_segmentation(args, device)
 
     wandb.finish()
 

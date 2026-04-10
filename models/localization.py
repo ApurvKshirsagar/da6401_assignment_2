@@ -31,7 +31,7 @@ class VGG11Localizer(nn.Module):
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
             nn.Linear(512, 4),
-            nn.ReLU(inplace=True),   # ensures all outputs >= 0 (pixel coords)
+            nn.Sigmoid(),    # output in [0,1], scaled to pixel space in forward
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -43,6 +43,7 @@ class VGG11Localizer(nn.Module):
         Returns:
             [B, 4] bounding box (cx, cy, w, h) in pixel space.
         """
-        features = self.encoder(x)       # [B, 4096]
-        bbox     = self.head(features)   # [B, 4]
+        features = self.encoder(x)        # [B, 4096]
+        bbox     = self.head(features)    # [B, 4] in [0,1]
+        bbox     = bbox * 224.0           # scale to pixel space
         return bbox
