@@ -154,7 +154,7 @@ def train_classifier(args, device):
     model     = VGG11Classifier(num_classes=37).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     best_f1   = 0.0
     save_path = os.path.join(args.checkpoint_dir, "classifier.pth")
@@ -251,7 +251,7 @@ def train_localizer(args, device):
     # Only optimize unfrozen params
     params    = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.Adam(params, lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     best_iou  = 0.0
     save_path = os.path.join(args.checkpoint_dir, "localizer.pth")
@@ -298,22 +298,19 @@ def train_localizer(args, device):
 
 def dice_loss(pred: torch.Tensor, target: torch.Tensor,
               num_classes: int = 3, eps: float = 1e-6) -> torch.Tensor:
-    """Soft Dice loss averaged over classes.
-
-    Args:
-        pred:   [B, C, H, W] logits
-        target: [B, H, W] class indices
-    """
-    probs  = torch.softmax(pred, dim=1)          # [B, C, H, W]
+    probs  = torch.softmax(pred, dim=1)
     target_oh = nn.functional.one_hot(
         target, num_classes
-    ).permute(0, 3, 1, 2).float()                # [B, C, H, W]
+    ).permute(0, 3, 1, 2).float()
 
-    dims   = (0, 2, 3)   # sum over batch, H, W
+    dims   = (0, 2, 3)
     inter  = (probs * target_oh).sum(dims)
     union  = probs.sum(dims) + target_oh.sum(dims)
     dice   = (2 * inter + eps) / (union + eps)
-    return 1.0 - dice.mean()
+    # Weight border class (index 2) more heavily
+    weights = torch.tensor([1.0, 1.0, 2.0], device=pred.device)
+    weights = weights / weights.sum()
+    return 1.0 - (dice * weights).sum()
 
 
 def train_segmentation(args, device):
@@ -353,7 +350,8 @@ def train_segmentation(args, device):
         else:
             print("Encoder will be fine-tuned.")
 
-    ce_loss  = nn.CrossEntropyLoss()
+    class_weights = torch.tensor([1.0, 1.0, 2.0]).to(device)
+    ce_loss = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr
