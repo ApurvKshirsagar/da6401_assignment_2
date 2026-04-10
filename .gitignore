@@ -1,0 +1,38 @@
+# Dataset — never commit raw data
+data/oxford_pets/
+
+# Model checkpoints — submitted via Google Drive instead
+checkpoints/*.pth
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Test scripts (optional, keep if you want)
+test_*.py
+check_data.py
+
+# W&B local files
+wandb/
+
+# OS junk
+.DS_Store
+Thumbs.db
+*.tar.gz
+*.zip
+
+# IDEs
+.vscode/
+.idea/

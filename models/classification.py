@@ -4,26 +4,44 @@
 import torch
 import torch.nn as nn
 
+from models.vgg11 import VGG11Encoder
+
 
 class VGG11Classifier(nn.Module):
-    """Full classifier = VGG11Encoder + ClassificationHead."""
+    """Full classifier = VGG11Encoder + ClassificationHead.
 
-    def __init__(self, num_classes: int = 37, in_channels: int = 3, dropout_p: float = 0.5):
+    The encoder outputs a 4096-dim feature vector.
+    The head maps it to num_classes logits.
+    """
+
+    def __init__(
+        self,
+        num_classes: int   = 37,
+        in_channels: int   = 3,
+        dropout_p:   float = 0.5,
+    ):
         """
-        Initialize the VGG11Classifier model.
         Args:
-            num_classes: Number of output classes.
+            num_classes: Number of output classes (37 breeds).
             in_channels: Number of input channels.
-            dropout_p: Dropout probability for the classifier head.
+            dropout_p:   Dropout probability in encoder FC layers.
         """
-        pass
+        super().__init__()
+
+        self.encoder = VGG11Encoder(in_channels=in_channels)
+
+        # Classification head: 4096 → num_classes
+        self.head = nn.Linear(4096, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass for classification model.
+        """Forward pass.
+
         Args:
-            x: Input tensor of shape [B, in_channels, H, W].
+            x: [B, 3, 224, 224] input tensor.
+
         Returns:
-            Classification logits [B, num_classes].
+            [B, num_classes] classification logits.
         """
-        # TODO: Implement forward pass.
-        raise NotImplementedError("Implement VGG11Classifier.forward")
+        features = self.encoder(x)        # [B, 4096]
+        logits   = self.head(features)    # [B, num_classes]
+        return logits
