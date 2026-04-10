@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+from models.layers import CustomDropout
 
 from models.vgg11 import VGG11Encoder
 
@@ -26,12 +27,17 @@ class VGG11Localizer(nn.Module):
         # Regression head: 4096 → 4 (cx, cy, w, h)
         # ReLU at output ensures positive width/height
         # No activation on cx/cy — they can be anywhere in image
+  
         self.head = nn.Sequential(
             nn.Linear(4096, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Linear(512, 4),
-            nn.Sigmoid(),    # output in [0,1], scaled to pixel space in forward
+            CustomDropout(p=0.3),
+            nn.Linear(512, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 4),
+            nn.Sigmoid(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

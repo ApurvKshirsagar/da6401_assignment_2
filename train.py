@@ -65,7 +65,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, task):
                 t = bboxes[has_bbox]
                 mse_loss = criterion["mse"](p / 224.0, t / 224.0)
                 iou_loss = criterion["iou"](p, t)
-                loss     = mse_loss + iou_loss
+                loss     = mse_loss + 2.0 * iou_loss
             else:
                 loss = torch.tensor(0.0, device=device, requires_grad=True)
 
@@ -111,7 +111,7 @@ def evaluate(model, loader, criterion, device, task):
                 t = bboxes[has_bbox]
                 mse_loss = criterion["mse"](p / 224.0, t / 224.0)
                 iou_loss = criterion["iou"](p, t)
-                loss     = mse_loss + iou_loss
+                loss     = mse_loss + 2.0 * iou_loss
                 # Track IoU score (1 - loss) for logging
                 iou_scores.extend((1 - criterion["iou"](p, t).item()
                                     if False else
@@ -244,7 +244,7 @@ def train_localizer(args, device):
         print("No classifier.pth found — training localizer from scratch.")
 
     criterion = {
-        "mse": nn.MSELoss(),
+        "mse": nn.SmoothL1Loss(),
         "iou": IoULoss(reduction="mean"),
     }
 
