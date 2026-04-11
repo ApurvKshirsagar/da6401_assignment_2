@@ -57,7 +57,8 @@ class MultiTaskPerceptionModel(nn.Module):
         super().__init__()
 
         # ── Shared encoder backbone ───────────────────────────────────────
-        self.encoder = VGG11Encoder(in_channels=in_channels)
+        self.encoder     = VGG11Encoder(in_channels=in_channels)  # cls + seg
+        self.loc_encoder = VGG11Encoder(in_channels=in_channels)  # localization
 
         # ── Classification head: 4096 → num_breeds ───────────────────────
         self.cls_head = nn.Linear(4096, num_breeds)
@@ -115,16 +116,13 @@ class MultiTaskPerceptionModel(nn.Module):
             self.cls_head.load_state_dict(cls_sd, strict=False)
             print(f"Loaded classifier weights from {classifier_path}")
 
-        # ── 2. Localizer → load head weights by matching structure ────────
-        # ── 2. Localizer → encoder + head ────────────────────────────────
-        # Load localizer's encoder (overrides classifier encoder for shared
-        # backbone — localizer encoder is fine-tuned for bbox regression)
+        # ── 2. Localizer → dedicated loc_encoder + head ───────────────────
         if os.path.exists(localizer_path):
             sd = load_sd(localizer_path)
-            # Load localizer encoder weights (overrides classifier encoder)
+            # Load into dedicated loc_encoder (does NOT touch shared encoder)
             enc_sd = {k.replace("encoder.", ""): v
                       for k, v in sd.items() if k.startswith("encoder.")}
-            self.encoder.load_state_dict(enc_sd, strict=False)
+            self.loc_encoder.load_state_dict(enc_sd, strict=False)
             # Load localizer head with index remapping
             # Checkpoint: head.0 (Linear 4096→512), head.1 (BN), head.4 (Linear 512→4)
             # loc_head:   idx 0  (Linear),           idx 1  (BN), idx 3  (Linear)
@@ -176,16 +174,15 @@ class MultiTaskPerceptionModel(nn.Module):
               'localization':   [B, 4] bbox (cx,cy,w,h) pixel space
               'segmentation':   [B, seg_classes, 224, 224] logits
         """
-        # ── Shared encoder ────────────────────────────────────────────────
+        # ── Shared encoder (classifier + segmentation) ────────────────────
         features, feat_dict = self.encoder(x, return_features=True)
-        # features   : [B, 4096]
-        # feat_dict  : skip1..skip5, bottleneck
 
         # ── Classification ────────────────────────────────────────────────
         cls_out = self.cls_head(features)              # [B, 37]
 
-        # ── Localization ──────────────────────────────────────────────────
-        loc_out = self.loc_head(features) * 224.0      # [B, 4] pixel space
+        # ── Localization (dedicated encoder) ──────────────────────────────
+        loc_features = self.loc_encoder(x)             # [B, 4096]
+        loc_out = self.loc_head(loc_features) * 224.0  # [B, 4] pixel space
 
         # ── Segmentation ──────────────────────────────────────────────────
         bottleneck = feat_dict["bottleneck"]
