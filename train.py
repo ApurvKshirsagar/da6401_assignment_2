@@ -59,10 +59,17 @@ def train_one_epoch(model, loader, optimizer, criterion, device, task):
             has_bbox   = batch["has_bbox"].to(device)
             pred_boxes = model(images)
 
-            # Only compute loss on samples that have real bboxes
-            if has_bbox.any():
-                p = pred_boxes[has_bbox]
-                t = bboxes[has_bbox]
+            # Only train on REAL bbox samples — skip dummy fallback boxes
+            real_mask = has_bbox & ~(
+                (bboxes[:, 0] == 112.0) &
+                (bboxes[:, 1] == 112.0) &
+                (bboxes[:, 2] == 224.0) &
+                (bboxes[:, 3] == 224.0)
+            )
+
+            if real_mask.any():
+                p = pred_boxes[real_mask]
+                t = bboxes[real_mask]
                 mse_loss = criterion["mse"](p / 224.0, t / 224.0)
                 iou_loss = criterion["iou"](p, t)
                 loss     = mse_loss + 2.0 * iou_loss
@@ -106,17 +113,22 @@ def evaluate(model, loader, criterion, device, task):
             has_bbox   = batch["has_bbox"].to(device)
             pred_boxes = model(images)
 
-            if has_bbox.any():
-                p = pred_boxes[has_bbox]
-                t = bboxes[has_bbox]
+            # Filter out dummy fallback boxes [112,112,224,224]
+            real_mask = has_bbox & ~(
+                (bboxes[:, 0] == 112.0) &
+                (bboxes[:, 1] == 112.0) &
+                (bboxes[:, 2] == 224.0) &
+                (bboxes[:, 3] == 224.0)
+            )
+            if real_mask.any():
+                p        = pred_boxes[real_mask]
+                t        = bboxes[real_mask]
                 mse_loss = criterion["mse"](p / 224.0, t / 224.0)
                 iou_loss = criterion["iou"](p, t)
                 loss     = mse_loss + 2.0 * iou_loss
-                # Track IoU score (1 - loss) for logging
-                iou_scores.extend((1 - criterion["iou"](p, t).item()
-                                    if False else
-                                    IoULoss(reduction="none")(p, t)
-                                    .cpu().numpy().tolist()))
+                iou_scores.extend(
+                    IoULoss(reduction="none")(p, t).cpu().numpy().tolist()
+                )
             else:
                 loss = torch.tensor(0.0)
 
@@ -244,7 +256,7 @@ def train_localizer(args, device):
         print("No classifier.pth found — training localizer from scratch.")
 
     criterion = {
-        "mse": nn.SmoothL1Loss(),
+        "mse": nn.MSELoss(),
         "iou": IoULoss(reduction="mean"),
     }
 

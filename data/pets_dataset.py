@@ -95,28 +95,19 @@ class OxfordIIITPetDataset(Dataset):
 
     # ──────────────────────────────────────────────────────────────────────
     def _load_split(self) -> List[Dict]:
-        """Parse list.txt and split into train/val/test.
-
-        Returns list of dicts with keys:
-            name, class_id (0-indexed), species, breed_id
-        """
-        list_file = os.path.join(
-            self.root, "annotations", "list.txt"
-        )
-
+        list_file = os.path.join(self.root, "annotations", "list.txt")
         all_samples = []
         with open(list_file) as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                parts = line.split()
+                parts    = line.split()
                 name     = parts[0]
-                class_id = int(parts[1]) - 1   # 1-indexed → 0-indexed
+                class_id = int(parts[1]) - 1
                 species  = int(parts[2])
                 breed_id = int(parts[3])
 
-                # Skip if image file missing
                 img_path = os.path.join(self.img_dir, name + ".jpg")
                 if not os.path.exists(img_path):
                     continue
@@ -128,12 +119,9 @@ class OxfordIIITPetDataset(Dataset):
                     "breed_id": breed_id,
                 })
 
-        # Deterministic train/val/test split (80/10/10)
-        # Use fixed seed so split is always the same
-        rng = np.random.RandomState(42)
+        rng     = np.random.RandomState(42)
         indices = rng.permutation(len(all_samples))
-
-        n      = len(all_samples)
+        n       = len(all_samples)
         n_train = int(0.8 * n)
         n_val   = int(0.1 * n)
 
@@ -141,7 +129,7 @@ class OxfordIIITPetDataset(Dataset):
             chosen = indices[:n_train]
         elif self.split == "val":
             chosen = indices[n_train: n_train + n_val]
-        else:  # test
+        else:
             chosen = indices[n_train + n_val:]
 
         return [all_samples[i] for i in chosen]

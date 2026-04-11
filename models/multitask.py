@@ -64,11 +64,11 @@ class MultiTaskPerceptionModel(nn.Module):
 
         # ── Localization head: 4096 → 4 (cxcywh) ────────────────────────
         self.loc_head = nn.Sequential(
-            nn.Linear(4096, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, 4),
-            nn.Sigmoid(),
+            nn.Linear(4096, 512),   # idx 0 — matches ckpt head.0
+            nn.BatchNorm1d(512),    # idx 1 — matches ckpt head.1
+            nn.ReLU(inplace=True),  # idx 2
+            nn.Linear(512, 4),      # idx 3 — matches ckpt head.4
+            nn.Sigmoid(),           # idx 4
         )
 
         # ── Segmentation decoder ──────────────────────────────────────────
@@ -107,28 +107,49 @@ class MultiTaskPerceptionModel(nn.Module):
         # ── 1. Classifier → shared encoder + cls_head ────────────────────
         if os.path.exists(classifier_path):
             sd = load_sd(classifier_path)
-            # encoder weights
             enc_sd = {k.replace("encoder.", ""): v
                       for k, v in sd.items() if k.startswith("encoder.")}
             self.encoder.load_state_dict(enc_sd, strict=False)
-            # classification head
             cls_sd = {k.replace("head.", ""): v
                       for k, v in sd.items() if k.startswith("head.")}
             self.cls_head.load_state_dict(cls_sd, strict=False)
             print(f"Loaded classifier weights from {classifier_path}")
 
-        # ── 2. Localizer → loc_head (encoder already loaded above) ───────
+        # ── 2. Localizer → load head weights by matching structure ────────
+        # ── 2. Localizer → encoder + head ────────────────────────────────
+        # Load localizer's encoder (overrides classifier encoder for shared
+        # backbone — localizer encoder is fine-tuned for bbox regression)
         if os.path.exists(localizer_path):
             sd = load_sd(localizer_path)
-            loc_sd = {k.replace("head.", ""): v
-                      for k, v in sd.items() if k.startswith("head.")}
-            self.loc_head.load_state_dict(loc_sd, strict=False)
+            # Load localizer encoder weights (overrides classifier encoder)
+            enc_sd = {k.replace("encoder.", ""): v
+                      for k, v in sd.items() if k.startswith("encoder.")}
+            self.encoder.load_state_dict(enc_sd, strict=False)
+            # Load localizer head with index remapping
+            # Checkpoint: head.0 (Linear 4096→512), head.1 (BN), head.4 (Linear 512→4)
+            # loc_head:   idx 0  (Linear),           idx 1  (BN), idx 3  (Linear)
+            loc_sd = {}
+            for k, v in sd.items():
+                if not k.startswith("head."):
+                    continue
+                suffix = k[len("head."):]
+                parts  = suffix.split(".", 1)
+                idx    = int(parts[0])
+                rest   = parts[1] if len(parts) > 1 else ""
+                if idx in (0, 1):
+                    new_key = f"{idx}.{rest}"
+                elif idx == 4:
+                    new_key = f"3.{rest}"
+                else:
+                    continue
+                loc_sd[new_key] = v
+            missing, unexpected = self.loc_head.load_state_dict(loc_sd, strict=False)
+            print(f"Loaded localizer head — missing:{len(missing)} unexpected:{len(unexpected)}")
             print(f"Loaded localizer weights from {localizer_path}")
 
         # ── 3. U-Net → segmentation decoder ──────────────────────────────
         if os.path.exists(unet_path):
             sd = load_sd(unet_path)
-            # decoder blocks
             for block_name in ["dec4", "dec3", "dec2", "dec1", "dec0"]:
                 block_sd = {k.replace(f"{block_name}.", ""): v
                             for k, v in sd.items()
@@ -137,7 +158,6 @@ class MultiTaskPerceptionModel(nn.Module):
                     getattr(self, block_name).load_state_dict(
                         block_sd, strict=True
                     )
-            # segmentation head
             seg_sd = {k.replace("head.", ""): v
                       for k, v in sd.items() if k.startswith("head.")}
             self.seg_head.load_state_dict(seg_sd, strict=True)
