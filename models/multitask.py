@@ -56,9 +56,10 @@ class MultiTaskPerceptionModel(nn.Module):
 
         super().__init__()
 
-        # ── Shared encoder backbone ───────────────────────────────────────
-        self.encoder     = VGG11Encoder(in_channels=in_channels)  # cls + seg
+        # ── Encoders ──────────────────────────────────────────────────────
+        self.encoder     = VGG11Encoder(in_channels=in_channels)  # classification
         self.loc_encoder = VGG11Encoder(in_channels=in_channels)  # localization
+        self.seg_encoder = VGG11Encoder(in_channels=in_channels)  # segmentation
 
         # ── Classification head: 4096 → num_breeds ───────────────────────
         self.cls_head = nn.Linear(4096, num_breeds)
@@ -148,6 +149,10 @@ class MultiTaskPerceptionModel(nn.Module):
         # ── 3. U-Net → segmentation decoder ──────────────────────────────
         if os.path.exists(unet_path):
             sd = load_sd(unet_path)
+            # Load unet's encoder into dedicated seg_encoder
+            enc_sd = {k.replace("encoder.", ""): v
+                      for k, v in sd.items() if k.startswith("encoder.")}
+            self.seg_encoder.load_state_dict(enc_sd, strict=False)
             for block_name in ["dec4", "dec3", "dec2", "dec1", "dec0"]:
                 block_sd = {k.replace(f"{block_name}.", ""): v
                             for k, v in sd.items()
@@ -174,17 +179,16 @@ class MultiTaskPerceptionModel(nn.Module):
               'localization':   [B, 4] bbox (cx,cy,w,h) pixel space
               'segmentation':   [B, seg_classes, 224, 224] logits
         """
-        # ── Shared encoder (classifier + segmentation) ────────────────────
-        features, feat_dict = self.encoder(x, return_features=True)
-
-        # ── Classification ────────────────────────────────────────────────
+        # ── Classification encoder ────────────────────────────────────────
+        features, _ = self.encoder(x, return_features=True)
         cls_out = self.cls_head(features)              # [B, 37]
 
-        # ── Localization (dedicated encoder) ──────────────────────────────
-        loc_features = self.loc_encoder(x)             # [B, 4096]
+        # ── Localization encoder ──────────────────────────────────────────
+        loc_features = self.loc_encoder(x)
         loc_out = self.loc_head(loc_features) * 224.0  # [B, 4] pixel space
 
-        # ── Segmentation ──────────────────────────────────────────────────
+        # ── Segmentation encoder ──────────────────────────────────────────
+        _, feat_dict = self.seg_encoder(x, return_features=True)
         bottleneck = feat_dict["bottleneck"]
         s4 = feat_dict["skip4"]
         s3 = feat_dict["skip3"]
