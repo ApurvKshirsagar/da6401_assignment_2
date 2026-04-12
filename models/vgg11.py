@@ -134,3 +134,62 @@ class VGG11Encoder(nn.Module):
             return features, feature_dict
 
         return features
+
+class VGG11EncoderNoBN(nn.Module):
+    """VGG11 encoder WITHOUT BatchNorm — for ablation study (Section 2.1)."""
+
+    def __init__(self, in_channels: int = 3):
+        super().__init__()
+        self.block1 = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.pool1 = nn.MaxPool2d(2, 2)
+        self.block2 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.pool2 = nn.MaxPool2d(2, 2)
+        self.block3 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.pool3 = nn.MaxPool2d(2, 2)
+        self.block4 = nn.Sequential(
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.pool4 = nn.MaxPool2d(2, 2)
+        self.block5 = nn.Sequential(
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.pool5 = nn.MaxPool2d(2, 2)
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((7, 7))
+        self.fc = nn.Sequential(
+            nn.Linear(512 * 7 * 7, 4096),
+            nn.ReLU(inplace=True),
+            CustomDropout(p=0.5),
+            nn.Linear(4096, 4096),
+            nn.ReLU(inplace=True),
+            CustomDropout(p=0.5),
+        )
+
+    def forward(self, x, return_features=False):
+        x  = self.block1(x); s1 = self.pool1(x)
+        x  = self.block2(s1); s2 = self.pool2(x)
+        x  = self.block3(s2); s3 = self.pool3(x)
+        x  = self.block4(s3); s4 = self.pool4(x)
+        x  = self.block5(s4); s5 = self.pool5(x)
+        bn = self.adaptive_pool(s5)
+        flat = bn.view(bn.size(0), -1)
+        features = self.fc(flat)
+        if return_features:
+            return features, {"skip1":s1,"skip2":s2,"skip3":s3,"skip4":s4,"skip5":s5,"bottleneck":bn}
+        return features
