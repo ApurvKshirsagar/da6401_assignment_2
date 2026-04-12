@@ -4,7 +4,7 @@
 **Apurv Kshirsagar** | CE22B042 | IIT Madras
 
 ## Links
-- **WandB Report**: [ADD YOUR PUBLIC WANDB REPORT LINK HERE]
+- **WandB Report**: https://api.wandb.ai/links/ce22b042-iit-madras/naufa57w
 - **GitHub Repo**: https://github.com/ApurvKshirsagar/da6401_assignment_2
 
 ## Results (Autograder: 50/50)
